@@ -370,25 +370,28 @@ def initialize_new_params(new_pt_cld, mean3_sq_dist, gaussian_distribution, curr
     means3D = new_pt_cld[:, :3] # [num_gaussians, 3]
 
     np_3d = means3D.cpu().numpy()
-    best_eq, best_inliers = plane1.fit(np_3d, thresh=0.05, maxIteration=100)
+    remain_indices_torch = torch.from_numpy(np.arange(num_pts))
+    if len(np_3d) >= 25:
+        best_eq, best_inliers = plane1.fit(np_3d, thresh=0.05, maxIteration=100)
 
-    # randomly pick 1/16 of plane points, their scales *4
-    num_select = int(len(best_inliers)/9)
-    selected_indices = np.random.choice(best_inliers, size=num_select, replace=False)
-    selected_indices_torch = torch.from_numpy(selected_indices)
-    mean3_sq_dist[selected_indices_torch] *= 3
+        if len(best_inliers) >= 25:
+            # randomly pick 1/16 of plane points, their scales *4
+            num_select = int(len(best_inliers)/25)
+            selected_indices = np.random.choice(best_inliers, size=num_select, replace=False)
+            selected_indices_torch = torch.from_numpy(selected_indices)
+            mean3_sq_dist[selected_indices_torch] *= 5
 
-    mask_inlier = ~np.isin(best_inliers, selected_indices)
-    deleted_indices = best_inliers[mask_inlier]
+            mask_inlier = ~np.isin(best_inliers, selected_indices)
+            deleted_indices = best_inliers[mask_inlier]
 
-    mask_all = ~np.isin(np.arange(num_pts), deleted_indices)
-    remain_indices = np.arange(num_pts)[mask_all]
-    remain_indices_torch = torch.from_numpy(remain_indices)
+            mask_all = ~np.isin(np.arange(num_pts), deleted_indices)
+            remain_indices = np.arange(num_pts)[mask_all]
+            remain_indices_torch = torch.from_numpy(remain_indices)
 
-    mean3_sq_dist = mean3_sq_dist[remain_indices_torch]
-    means3D = means3D[remain_indices_torch]
+            mean3_sq_dist = mean3_sq_dist[remain_indices_torch]
+            means3D = means3D[remain_indices_torch]
 
-    num_pts -= len(deleted_indices)
+            num_pts -= len(deleted_indices)
 
     unnorm_rots = np.tile([1, 0, 0, 0], (num_pts, 1)) # [num_gaussians, 4]
     logit_opacities = torch.zeros((num_pts, 1), dtype=torch.float, device="cuda")
@@ -408,7 +411,7 @@ def initialize_new_params(new_pt_cld, mean3_sq_dist, gaussian_distribution, curr
     }
 
     for k, v in params.items():
-        print(v.shape)
+
         # Check if value is already a torch tensor
         if not isinstance(v, torch.Tensor):
             params[k] = torch.nn.Parameter(torch.tensor(v).cuda().float().contiguous().requires_grad_(True))
