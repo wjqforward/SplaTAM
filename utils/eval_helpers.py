@@ -14,7 +14,7 @@ from utils.slam_helpers import (
     quat_mult, matrix_to_quaternion
 )
 
-from diff_gaussian_rasterization import GaussianRasterizer as Renderer
+from diff_gaussian_rasterization_splatam import GaussianRasterizer as Renderer
 
 from pytorch_msssim import ms_ssim
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity

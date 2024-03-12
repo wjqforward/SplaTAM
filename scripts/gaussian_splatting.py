@@ -35,7 +35,7 @@ from utils.gs_external import (
     get_expon_lr_func, update_learning_rate
 )
 
-from diff_gaussian_rasterization import GaussianRasterizer as Renderer
+from diff_gaussian_rasterization_splatam import GaussianRasterizer as Renderer
 
 
 def get_dataset(config_dict, basedir, sequence, **kwargs):

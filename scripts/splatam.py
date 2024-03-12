@@ -4,10 +4,13 @@ import shutil
 import sys
 import time
 from importlib.machinery import SourceFileLoader
+import hydra
 
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 sys.path.insert(0, _BASE_DIR)
+sys.path.append('/root/autodl-tmp/pixelsplat/src/paper')
+from generate_point_cloud_figure_splatam import PointCloudGenerator
 
 print("System Paths:")
 for p in sys.path:
@@ -34,7 +37,7 @@ from utils.slam_helpers import (
 )
 from utils.slam_external import calc_ssim, build_rotation, prune_gaussians, densify
 
-from diff_gaussian_rasterization import GaussianRasterizer as Renderer
+from diff_gaussian_rasterization_splatam import GaussianRasterizer as Renderer
 
 
 def get_dataset(config_dict, basedir, sequence, **kwargs):
@@ -239,7 +242,7 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
                                              gaussians_grad=True,
                                              camera_grad=False)
 
-    # Initialize Render Variables
+    # Initialize Render VariablesS+ayUUe90rOBs, transformed_gaussians)
     rendervar = transformed_params2rendervar(params, transformed_gaussians)
     depth_sil_rendervar = transformed_params2depthplussilhouette(params, curr_data['w2c'],
                                                                  transformed_gaussians)
@@ -394,6 +397,18 @@ def add_new_gaussians(params, variables, curr_data, sil_thres,
     # Flatten mask
     non_presence_mask = non_presence_mask.reshape(-1)
 
+    # print(curr_data['im'].shape)
+    # print(curr_data['im'])
+    # tensor = (curr_data['im'].cpu() * 255).byte()
+
+    # # 转换为numpy数组，并将通道顺序从[通道, 高度, 宽度]改为[高度, 宽度, 通道]
+    # img = tensor.numpy().transpose(1, 2, 0)
+
+    # # 使用OpenCV显示图像
+    # img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    # cv2.imwrite('/root/autodl-tmp/SplaTAM/output_image.png', img)
+    # time.sleep(10)
+
     # Get the new frame Gaussians based on the Silhouette
     if torch.sum(non_presence_mask) > 0:
         # Get the new pointcloud in the world frame
@@ -452,7 +467,9 @@ def convert_params_to_store(params):
     return params_to_store
 
 
-def rgbd_slam(config: dict):
+def rgbd_slam(config: dict, gaussian_gen):
+    gaussian_gen.generate_gaussians()
+    time.sleep(10)
     # Print Config
     print("Loaded Config:")
     if "use_depth_loss_thres" not in config['tracking']:
@@ -989,26 +1006,104 @@ def rgbd_slam(config: dict):
     if config['use_wandb']:
         wandb.finish()
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
 
-    parser.add_argument("experiment", type=str, help="Path to experiment file")
 
-    args = parser.parse_args()
+import sys
+sys.path.append('/root/autodl-tmp/pixelsplat')
 
-    experiment = SourceFileLoader(
-        os.path.basename(args.experiment), args.experiment
-    ).load_module()
+from pathlib import Path
+
+import hydra
+import torch
+from einops import einsum, rearrange, repeat
+from jaxtyping import install_import_hook
+from lightning_fabric.utilities.apply_func import apply_to_collection
+from scipy.spatial.transform import Rotation as R
+from torch import Tensor
+from torch.utils.data import default_collate
+
+
+
+
+
+
+
+
+
+
+
+
+
+SCENES = (
+    # scene, [context 1, context 2], far plane
+    # ("test", [785, 795], 15, [0]),
+    ("1825_1865", [1825, 1865], 15, [0, 30, 60, 90, 120, 150]),
+    ("124_128", [124, 128], 15, [0, 30, 60, 90, 120, 150]),
+    ("512_522", [512, 522], 15, [0, 30, 60, 90, 120, 150]),
+)
+
+FIGURE_WIDTH = 500
+MARGIN = 4
+GAUSSIAN_TRIM = 8
+LINE_WIDTH = 2
+LINE_COLOR = [0, 0, 0]
+POINT_DENSITY = 0.5
+scene_path = "/root/autodl-tmp/SplaTAM/data/Replica/room0/results/"
+extrinsics_path = "/root/autodl-tmp/SplaTAM/data/Replica/room0/traj.txt"
+intrinsics_path = "/root/autodl-tmp/SplaTAM/data/Replica/cam_params.json"
+
+import sys
+sys.path.append('.cache/torch/hub/facebookresearch_dino_main/utils.py')
+
+
+@hydra.main(
+    version_base=None,
+    config_path="/root/autodl-tmp/pixelsplat/config",
+    config_name="main",
+)
+
+def main(cfg):
+    with torch.no_grad():
+        model = PointCloudGenerator(cfg)
+        # model.generate_gaussians()
+        
+    experiment_config_path = 'configs/replica/splatam_s.py'
+
+    experiment = SourceFileLoader(os.path.basename(experiment_config_path), experiment_config_path).load_module()
 
     # Set Experiment Seed
     seed_everything(seed=experiment.config['seed'])
-    
-    # Create Results Directory and Copy Config
+
     results_dir = os.path.join(
         experiment.config["workdir"], experiment.config["run_name"]
     )
     if not experiment.config['load_checkpoint']:
         os.makedirs(results_dir, exist_ok=True)
-        shutil.copy(args.experiment, os.path.join(results_dir, "config.py"))
+        shutil.copy('configs/replica/splatam_s.py', os.path.join(results_dir, "config.py"))
 
-    rgbd_slam(experiment.config)
+    rgbd_slam(experiment.config, model)
+
+
+
+if __name__ == "__main__":
+    # parser = argparse.ArgumentParser()
+
+    # parser.add_argument("experiment", type=str, help="Path to experiment file")
+
+    # args = parser.parse_args()
+    # print("__________")
+    # print(args.experiment)
+
+    # experiment = SourceFileLoader(
+    #     os.path.basename(args.experiment), args.experiment
+    # ).load_module()
+
+    # # Set Experiment Seed
+    # seed_everything(seed=experiment.config['seed'])
+    
+    # Create Results Directory and Copy Config
+    main()
+
+
+
+    

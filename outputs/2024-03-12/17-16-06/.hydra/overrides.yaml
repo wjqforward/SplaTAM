@@ -1,0 +1,2 @@
+- +experiment=re10k
+- checkpointing.load=checkpoints/re10k.ckpt

@@ -28,7 +28,7 @@ from utils.gs_helpers import (params2rendervar, params2depthplussilhouette,
                               report_progress, eval, l1_loss_v1)
 from utils.gs_external import calc_ssim, densify, get_expon_lr_func, update_learning_rate, build_rotation
 
-from diff_gaussian_rasterization import GaussianRasterizer as Renderer
+from diff_gaussian_rasterization_splatam import GaussianRasterizer as Renderer
 
 
 def get_dataset(config_dict, basedir, sequence, **kwargs):

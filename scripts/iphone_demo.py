@@ -34,7 +34,7 @@ from utils.slam_external import build_rotation, prune_gaussians, densify
 from utils.slam_helpers import matrix_to_quaternion
 from scripts.splatam import get_loss, initialize_optimizer, initialize_params, initialize_camera_pose, get_pointcloud, add_new_gaussians
 
-from diff_gaussian_rasterization import GaussianRasterizer as Renderer
+from diff_gaussian_rasterization_splatam import GaussianRasterizer as Renderer
 
 import cyclonedds.idl as idl
 import cyclonedds.idl.annotations as annotate
