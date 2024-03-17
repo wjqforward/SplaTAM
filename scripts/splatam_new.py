@@ -468,8 +468,8 @@ def convert_params_to_store(params):
 
 
 def rgbd_slam(config: dict, gaussian_gen):
-    gaussian_gen.generate_gaussians()
-    time.sleep(10)
+    # gaussian_gen.generate_gaussians()
+    # time.sleep(10)
     # Print Config
     print("Loaded Config:")
     if "use_depth_loss_thres" not in config['tracking']:
