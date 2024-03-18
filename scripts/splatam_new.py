@@ -350,7 +350,11 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
     return loss, variables, weighted_losses
 
 
-def initialize_new_params(new_pt_cld, mean3_sq_dist, gaussian_distribution):
+def initialize_new_params(new_pt_cld, mean3_sq_dist, gaussian_distribution, last_w2c, curr_w2c, time_idx):
+
+    ps_gaussians = ps_model.generate_gaussians(time_idx, last_w2c, curr_w2c)
+    print(ps_gaussians)
+
     num_pts = new_pt_cld.shape[0]
     means3D = new_pt_cld[:, :3] # [num_gaussians, 3]
     unnorm_rots = np.tile([1, 0, 0, 0], (num_pts, 1)) # [num_gaussians, 4]
@@ -379,7 +383,8 @@ def initialize_new_params(new_pt_cld, mean3_sq_dist, gaussian_distribution):
 
 
 def add_new_gaussians(params, variables, curr_data, sil_thres, 
-                      time_idx, mean_sq_dist_method, gaussian_distribution):
+                      time_idx, mean_sq_dist_method, gaussian_distribution,
+                      ps_model):
     # Silhouette Rendering
     transformed_gaussians = transform_to_frame(params, time_idx, gaussians_grad=False, camera_grad=False)
     depth_sil_rendervar = transformed_params2depthplussilhouette(params, curr_data['w2c'],
@@ -417,12 +422,20 @@ def add_new_gaussians(params, variables, curr_data, sil_thres,
         curr_w2c = torch.eye(4).cuda().float()
         curr_w2c[:3, :3] = build_rotation(curr_cam_rot)
         curr_w2c[:3, 3] = curr_cam_tran
+
+        # add pose at last frame
+        last_cam_rot = torch.nn.functional.normalize(params['cam_unnorm_rots'][..., time_idx-1].detach())
+        last_cam_tran = params['cam_trans'][..., time_idx-1].detach()
+        last_w2c = torch.eye(4).cuda().float()
+        last_w2c[:3, :3] = build_rotation(last_cam_rot)
+        last_w2c[:3, 3] = last_cam_tran
+
         valid_depth_mask = (curr_data['depth'][0, :, :] > 0)
         non_presence_mask = non_presence_mask & valid_depth_mask.reshape(-1)
         new_pt_cld, mean3_sq_dist = get_pointcloud(curr_data['im'], curr_data['depth'], curr_data['intrinsics'], 
                                     curr_w2c, mask=non_presence_mask, compute_mean_sq_dist=True,
                                     mean_sq_dist_method=mean_sq_dist_method)
-        new_params = initialize_new_params(new_pt_cld, mean3_sq_dist, gaussian_distribution)
+        new_params = initialize_new_params(new_pt_cld, mean3_sq_dist, gaussian_distribution, last_w2c, curr_w2c, time_idx)
         for k, v in new_params.items():
             params[k] = torch.nn.Parameter(torch.cat((params[k], v), dim=0).requires_grad_(True))
         num_pts = params['means3D'].shape[0]
@@ -580,7 +593,7 @@ def rgbd_slam(config: dict, gaussian_gen):
                                                                                         config['scene_radius_depth_ratio'],
                                                                                         config['mean_sq_dist_method'],
                                                                                         gaussian_distribution=config['gaussian_distribution'])
-    
+
     # Init seperate dataloader for tracking if required
     if seperate_tracking_res:
         tracking_dataset = get_dataset(
@@ -759,6 +772,7 @@ def rgbd_slam(config: dict, gaussian_gen):
             with torch.no_grad():
                 params['cam_unnorm_rots'][..., time_idx] = candidate_cam_unnorm_rot
                 params['cam_trans'][..., time_idx] = candidate_cam_tran
+
         elif time_idx > 0 and config['tracking']['use_gt_poses']:
             with torch.no_grad():
                 # Get the ground truth pose relative to frame 0
@@ -808,7 +822,8 @@ def rgbd_slam(config: dict, gaussian_gen):
                 # Add new Gaussians to the scene based on the Silhouette
                 params, variables = add_new_gaussians(params, variables, densify_curr_data, 
                                                       config['mapping']['sil_thres'], time_idx,
-                                                      config['mean_sq_dist_method'], config['gaussian_distribution'])
+                                                      config['mean_sq_dist_method'], config['gaussian_distribution'],
+                                                      gaussian_gen)
                 post_num_pts = params['means3D'].shape[0]
                 if config['use_wandb']:
                     wandb_run.log({"Mapping/Number of Gaussians": post_num_pts,
@@ -1048,11 +1063,10 @@ sys.path.append('.cache/torch/hub/facebookresearch_dino_main/utils.py')
 
 def main(cfg):
     with torch.no_grad():
-        model = PointCloudGenerator(cfg)
+        ps_model = PointCloudGenerator(cfg)
         # model.generate_gaussians()
         
     experiment_config_path = 'configs/replica/splatam_s.py'
-
     experiment = SourceFileLoader(os.path.basename(experiment_config_path), experiment_config_path).load_module()
 
     # Set Experiment Seed
@@ -1065,7 +1079,7 @@ def main(cfg):
         os.makedirs(results_dir, exist_ok=True)
         shutil.copy('configs/replica/splatam_s.py', os.path.join(results_dir, "config.py"))
 
-    rgbd_slam(experiment.config, model)
+    rgbd_slam(experiment.config, ps_model)
 
 
 if __name__ == "__main__":
