@@ -397,7 +397,7 @@ def add_new_gaussians(params, variables, curr_data, sil_thres,
     # Flatten mask
     non_presence_mask = non_presence_mask.reshape(-1)
 
-    # print(curr_data['im'].shape)
+    print(curr_data['im'].shape)
     # print(curr_data['im'])
     # tensor = (curr_data['im'].cpu() * 255).byte()
 

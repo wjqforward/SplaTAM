@@ -201,6 +201,28 @@ def initialize_first_timestep(dataset, num_frames, scene_radius_depth_ratio,
     init_pt_cld, mean3_sq_dist = get_pointcloud(color, depth, densify_intrinsics, w2c, 
                                                 mask=mask, compute_mean_sq_dist=True, 
                                                 mean_sq_dist_method=mean_sq_dist_method)
+    
+    # num_pts = init_pt_cld.shape[0]
+    # means3D = init_pt_cld[:, :3] # [num_gaussians, 3]
+
+    # print(num_pts)
+    # print(means3D)
+
+    # numpy_array = means3D.cpu().detach().numpy()
+
+    # # 保存到 TXT 文件
+    # file_path = '/root/autodl-tmp/SplaTAM/data/Replica/room0/tensor_data0.txt'
+    # with open(file_path, 'w') as f:
+    #     # 对于每一行，将数组转换为字符串并写入文件
+    #     for row in numpy_array:
+    #         row_str = ' '.join(map(str, row))
+    #         f.write(row_str + '\n')
+
+    # print("DONE?????????????")
+    # time.sleep(10)
+
+
+
 
     # Initialize Parameters
     params, variables = initialize_params(init_pt_cld, num_frames, mean3_sq_dist, gaussian_distribution)
@@ -350,13 +372,22 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
     return loss, variables, weighted_losses
 
 
-def initialize_new_params(new_pt_cld, mean3_sq_dist, gaussian_distribution, last_w2c, curr_w2c, time_idx):
+def initialize_new_params(new_pt_cld, mean3_sq_dist, gaussian_distribution, 
+                          last_w2c, curr_w2c, pixelsplat, curr_data):
 
-    ps_gaussians = ps_model.generate_gaussians(time_idx, last_w2c, curr_w2c)
-    print(ps_gaussians)
-
+    # print(last_w2c, curr_w2c)
+    # print("))))))))")
+    # print(curr_data['last_im'], curr_data['im'])
+    # time.sleep(10)
+    # print("INTRINSICS", curr_data['intrinsics'])
+    # print(pixelsplat.intrinsics)
+    ps_gaussians,_ = pixelsplat.generate_gaussians(curr_data['id'], last_w2c, curr_w2c,
+                                                 curr_data['last_im'], curr_data['im'], 
+                                                 pixelsplat.intrinsics[0], True) #  curr_data['intrinsics']
+    
     num_pts = new_pt_cld.shape[0]
     means3D = new_pt_cld[:, :3] # [num_gaussians, 3]
+
     unnorm_rots = np.tile([1, 0, 0, 0], (num_pts, 1)) # [num_gaussians, 4]
     logit_opacities = torch.zeros((num_pts, 1), dtype=torch.float, device="cuda")
     if gaussian_distribution == "isotropic":
@@ -372,6 +403,67 @@ def initialize_new_params(new_pt_cld, mean3_sq_dist, gaussian_distribution, last
         'logit_opacities': logit_opacities,
         'log_scales': log_scales,
     }
+    
+    
+    print(means3D.shape)
+    print(ps_gaussians.means.shape)
+    print("OOOOOOOOOOOOOOOOOOOOO")
+
+    print(new_pt_cld[:, 3:6].shape)
+    print(ps_gaussians.harmonics.shape)
+    print("OOOOOOOOOOOOOOOOOOOOO")
+
+    print(logit_opacities.shape)
+    print(ps_gaussians.opacities.shape)
+    print("OOOOOOOOOOOOOOOOOOOOO")
+
+    print(log_scales.shape)
+    print(ps_gaussians.covariances.shape)
+    print("OOOOOOOOOOOOOOOOOOOOO")
+
+
+    time.sleep(100)
+    # print(ps_gaussians)
+    # print("num ", (ps_gaussians.opacities>0.2).sum().item())
+    
+    # numpy_array = ps_gaussians.means.cpu().detach().numpy()
+    # print(ps_gaussians)
+
+    # print(ps_gaussians.means.shape)
+
+
+    # time.sleep(10)
+    # numpy_points = ps_gaussians.means.squeeze().cpu().detach().numpy()
+
+
+    # file_path = '/root/autodl-tmp/SplaTAM/data/Replica/room0/tensor_data.txt'
+    # with open(file_path, 'w') as f:
+    #     # 对于每一行，将数组转换为字符串并写入文件
+    #     for row in numpy_points:
+    #         row_str = ' '.join(map(str, row))
+    #         f.write(row_str + '\n')
+
+    # time.sleep(10)
+    
+    
+    # num_pts = new_pt_cld.shape[0]
+    # means3D = new_pt_cld[:, :3] # [num_gaussians, 3]
+
+    # unnorm_rots = np.tile([1, 0, 0, 0], (num_pts, 1)) # [num_gaussians, 4]
+    # logit_opacities = torch.zeros((num_pts, 1), dtype=torch.float, device="cuda")
+    # if gaussian_distribution == "isotropic":
+    #     log_scales = torch.tile(torch.log(torch.sqrt(mean3_sq_dist))[..., None], (1, 1))
+    # elif gaussian_distribution == "anisotropic":
+    #     log_scales = torch.tile(torch.log(torch.sqrt(mean3_sq_dist))[..., None], (1, 3))
+    # else:
+    #     raise ValueError(f"Unknown gaussian_distribution {gaussian_distribution}")
+    # params = {
+    #     'means3D': means3D,
+    #     'rgb_colors': new_pt_cld[:, 3:6],
+    #     'unnorm_rotations': unnorm_rots,
+    #     'logit_opacities': logit_opacities,
+    #     'log_scales': log_scales,
+    # }
     for k, v in params.items():
         # Check if value is already a torch tensor
         if not isinstance(v, torch.Tensor):
@@ -384,7 +476,7 @@ def initialize_new_params(new_pt_cld, mean3_sq_dist, gaussian_distribution, last
 
 def add_new_gaussians(params, variables, curr_data, sil_thres, 
                       time_idx, mean_sq_dist_method, gaussian_distribution,
-                      ps_model):
+                      pixelsplat, map_step):
     # Silhouette Rendering
     transformed_gaussians = transform_to_frame(params, time_idx, gaussians_grad=False, camera_grad=False)
     depth_sil_rendervar = transformed_params2depthplussilhouette(params, curr_data['w2c'],
@@ -402,7 +494,20 @@ def add_new_gaussians(params, variables, curr_data, sil_thres,
     # Flatten mask
     non_presence_mask = non_presence_mask.reshape(-1)
 
+    # print(curr_data['last_im'].shape)
+    # print(curr_data['intrinsics'])
+    # print("))))))))))))))))))))")
     # print(curr_data['im'].shape)
+    # image_to_display = curr_data['im'].cpu().permute(1, 2, 0)
+    # plt.imshow(image_to_display)
+    # plt.axis('off') # 不显示坐标轴
+    # plt.savefig('/root/autodl-tmp/SplaTAM/data/Replica/room0_256_256/saved_image.png', bbox_inches='tight', pad_inches=0.0)
+
+    # # plt.imshow(image_to_display)
+    # # plt.axis('off') # 不显示坐标轴
+    # # plt.show()
+
+    # time.sleep(10)
     # print(curr_data['im'])
     # tensor = (curr_data['im'].cpu() * 255).byte()
 
@@ -424,8 +529,8 @@ def add_new_gaussians(params, variables, curr_data, sil_thres,
         curr_w2c[:3, 3] = curr_cam_tran
 
         # add pose at last frame
-        last_cam_rot = torch.nn.functional.normalize(params['cam_unnorm_rots'][..., time_idx-1].detach())
-        last_cam_tran = params['cam_trans'][..., time_idx-1].detach()
+        last_cam_rot = torch.nn.functional.normalize(params['cam_unnorm_rots'][..., time_idx-map_step+1].detach())
+        last_cam_tran = params['cam_trans'][..., time_idx-map_step+1].detach()
         last_w2c = torch.eye(4).cuda().float()
         last_w2c[:3, :3] = build_rotation(last_cam_rot)
         last_w2c[:3, 3] = last_cam_tran
@@ -435,7 +540,12 @@ def add_new_gaussians(params, variables, curr_data, sil_thres,
         new_pt_cld, mean3_sq_dist = get_pointcloud(curr_data['im'], curr_data['depth'], curr_data['intrinsics'], 
                                     curr_w2c, mask=non_presence_mask, compute_mean_sq_dist=True,
                                     mean_sq_dist_method=mean_sq_dist_method)
-        new_params = initialize_new_params(new_pt_cld, mean3_sq_dist, gaussian_distribution, last_w2c, curr_w2c, time_idx)
+
+
+        new_params = initialize_new_params(new_pt_cld, mean3_sq_dist, gaussian_distribution, 
+                                           last_w2c, curr_w2c, pixelsplat, curr_data)
+
+
         for k, v in new_params.items():
             params[k] = torch.nn.Parameter(torch.cat((params[k], v), dim=0).requires_grad_(True))
         num_pts = params['means3D'].shape[0]
@@ -480,10 +590,11 @@ def convert_params_to_store(params):
     return params_to_store
 
 
-def rgbd_slam(config: dict, gaussian_gen):
+def rgbd_slam(config: dict, pixelsplat):
     # gaussian_gen.generate_gaussians()
     # time.sleep(10)
     # Print Config
+    # print(pixelsplat.extrinsics)
     print("Loaded Config:")
     if "use_depth_loss_thres" not in config['tracking']:
         config['tracking']['use_depth_loss_thres'] = False
@@ -673,10 +784,16 @@ def rgbd_slam(config: dict, gaussian_gen):
     for time_idx in tqdm(range(checkpoint_time_idx, num_frames)):
         # Load RGBD frames incrementally instead of all frames
         color, depth, _, gt_pose = dataset[time_idx]
+        if (time_idx+1) % config['map_every'] == 0:
+            last_color, _, _, last_gt_pose = dataset[time_idx-config['map_every']+1]
+            last_color = last_color.permute(2, 0, 1) / 255
+
         # Process poses
         gt_w2c = torch.linalg.inv(gt_pose)
         # Process RGB-D Data
         color = color.permute(2, 0, 1) / 255
+        
+
         depth = depth.permute(2, 0, 1)
         gt_w2c_all_frames.append(gt_w2c)
         curr_gt_w2c = gt_w2c_all_frames
@@ -685,6 +802,9 @@ def rgbd_slam(config: dict, gaussian_gen):
         # Initialize Mapping Data for selected frame
         curr_data = {'cam': cam, 'im': color, 'depth': depth, 'id': iter_time_idx, 'intrinsics': intrinsics, 
                      'w2c': first_frame_w2c, 'iter_gt_w2c_list': curr_gt_w2c}
+
+        if (time_idx+1) % config['map_every'] == 0:
+            curr_data['last_im'] = last_color
         
         # Initialize Data for Tracking
         if seperate_tracking_res:
@@ -823,7 +943,7 @@ def rgbd_slam(config: dict, gaussian_gen):
                 params, variables = add_new_gaussians(params, variables, densify_curr_data, 
                                                       config['mapping']['sil_thres'], time_idx,
                                                       config['mean_sq_dist_method'], config['gaussian_distribution'],
-                                                      gaussian_gen)
+                                                      pixelsplat, config['map_every'])
                 post_num_pts = params['means3D'].shape[0]
                 if config['use_wandb']:
                     wandb_run.log({"Mapping/Number of Gaussians": post_num_pts,
@@ -1082,5 +1202,6 @@ def main(cfg):
     rgbd_slam(experiment.config, ps_model)
 
 
+# python scripts/splatam_new.py +experiment=re10k checkpointing.load=/root/autodl-tmp/pixelsplat/checkpoints/re10k.ckpt
 if __name__ == "__main__":
     main()
