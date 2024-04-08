@@ -5,6 +5,7 @@ import sys
 import time
 from importlib.machinery import SourceFileLoader
 import hydra
+import open3d as o3d
 
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -108,6 +109,7 @@ def get_pointcloud(color, depth, intrinsics, w2c, transform_pts=True,
     cols = torch.permute(color, (1, 2, 0)).reshape(-1, 3) # (C, H, W) -> (H, W, C) -> (H * W, C)
     point_cld = torch.cat((pts, cols), -1)
 
+    all_cld = point_cld.clone()
     # Select points based on mask
     if mask is not None:
         point_cld = point_cld[mask]
@@ -115,7 +117,7 @@ def get_pointcloud(color, depth, intrinsics, w2c, transform_pts=True,
             mean3_sq_dist = mean3_sq_dist[mask]
 
     if compute_mean_sq_dist:
-        return point_cld, mean3_sq_dist
+        return point_cld, mean3_sq_dist, all_cld
     else:
         return point_cld
 
@@ -198,7 +200,7 @@ def initialize_first_timestep(dataset, num_frames, scene_radius_depth_ratio,
     # Get Initial Point Cloud (PyTorch CUDA Tensor)
     mask = (depth > 0) # Mask out invalid depth values
     mask = mask.reshape(-1)
-    init_pt_cld, mean3_sq_dist = get_pointcloud(color, depth, densify_intrinsics, w2c, 
+    init_pt_cld, mean3_sq_dist, _ = get_pointcloud(color, depth, densify_intrinsics, w2c, 
                                                 mask=mask, compute_mean_sq_dist=True, 
                                                 mean_sq_dist_method=mean_sq_dist_method)
     
@@ -371,9 +373,15 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
 
     return loss, variables, weighted_losses
 
+def tensor_to_o3d(tensor):
+    """将PyTorch张量转换为Open3D点云对象"""
+    np_points = tensor.cpu().numpy()  # 转换为NumPy数组
+    pcd = o3d.geometry.PointCloud()  # 创建一个Open3D点云对象
+    pcd.points = o3d.utility.Vector3dVector(np_points)  # 设置点云坐标
+    return pcd
 
 def initialize_new_params(new_pt_cld, mean3_sq_dist, gaussian_distribution, 
-                          last_w2c, curr_w2c, pixelsplat, curr_data):
+                          last_w2c, curr_w2c, pixelsplat, curr_data, all_cld):
 
     # print(last_w2c, curr_w2c)
     # print("))))))))")
@@ -381,48 +389,82 @@ def initialize_new_params(new_pt_cld, mean3_sq_dist, gaussian_distribution,
     # time.sleep(10)
     # print("INTRINSICS", curr_data['intrinsics'])
     # print(pixelsplat.intrinsics)
-    ps_gaussians,_ = pixelsplat.generate_gaussians(curr_data['id'], last_w2c, curr_w2c,
+    ps_gaussians, psnr = pixelsplat.generate_gaussians(curr_data['id'], last_w2c, curr_w2c,
                                                  curr_data['last_im'], curr_data['im'], 
                                                  pixelsplat.intrinsics[0], True) #  curr_data['intrinsics']
     
-    num_pts = new_pt_cld.shape[0]
+    # num_pts = new_pt_cld.shape[0]
     means3D = new_pt_cld[:, :3] # [num_gaussians, 3]
+    num_pts = ps_gaussians.means.squeeze(0).shape[0]
+    unnorm_rots = np.tile([1, 0, 0, 0], (means3D.shape[0], 1)) # [num_gaussians, 4]
+    # logit_opacities = torch.zeros((num_pts, 1), dtype=torch.float, device="cuda")
+    # if gaussian_distribution == "isotropic":
+    #     log_scales = torch.tile(torch.log(torch.sqrt(mean3_sq_dist))[..., None], (1, 1))
+    # elif gaussian_distribution == "anisotropic":
+    #     log_scales = torch.tile(torch.log(torch.sqrt(mean3_sq_dist))[..., None], (1, 3))
+    # else:
+    #     raise ValueError(f"Unknown gaussian_distribution {gaussian_distribution}")
+    a_pcd = tensor_to_o3d(all_cld[:, :3])  # 将all_cld转换为Open3D点云
+    b_pcd = tensor_to_o3d(ps_gaussians.means.squeeze(0))
 
-    unnorm_rots = np.tile([1, 0, 0, 0], (num_pts, 1)) # [num_gaussians, 4]
-    logit_opacities = torch.zeros((num_pts, 1), dtype=torch.float, device="cuda")
-    if gaussian_distribution == "isotropic":
-        log_scales = torch.tile(torch.log(torch.sqrt(mean3_sq_dist))[..., None], (1, 1))
-    elif gaussian_distribution == "anisotropic":
-        log_scales = torch.tile(torch.log(torch.sqrt(mean3_sq_dist))[..., None], (1, 3))
-    else:
-        raise ValueError(f"Unknown gaussian_distribution {gaussian_distribution}")
+    # 使用ICP配准
+    threshold = 0.02  # 最大对应点对距离
+    trans_init = np.eye(4)  # 初始变换矩阵，假设B与A初始位置接近
+    reg_p2p = o3d.pipelines.registration.registration_icp(
+        b_pcd, a_pcd, threshold, trans_init,
+        o3d.pipelines.registration.TransformationEstimationPointToPoint())
+
+    # 应用变换矩阵到B
+    b_pcd.transform(reg_p2p.transformation)
+
+    transformed_points = np.asarray(b_pcd.points)
+    b_pcd = torch.tensor(transformed_points, device="cuda", dtype=torch.float)
+
+    # print(a_pcd.shape)
+    # print(b_pcd.shape)
+    # print("OOOOOOOOOO")
+    
+    # 假设 means3D 和 ps_gaussians.means 已经被转移到了适当的CUDA设备
+    means3D = means3D.to(device="cuda")  # 新一帧的部分点云 [num_gaussians, 3]
+    ps_means = b_pcd.to(device="cuda")  # 预训练模型生成的点云 [num_pts, 3]
+
+    dist_matrix = torch.cdist(ps_means, means3D, p=2)  # [num_pts, num_gaussians]
+    close_points_mask = torch.argmin(dist_matrix, dim=0)
+    filtered_ps_means = ps_means[close_points_mask]
+
+    # time.sleep(10)
+    # print(means3D.shape)
+    # print(filtered_ps_means.shape)
+
+    filtered_rgb_colors = ps_gaussians.harmonics.squeeze(0)[..., 0][close_points_mask].to(device="cuda")
+    filtered_logit_opacities = ps_gaussians.opacities.squeeze(0)[close_points_mask].unsqueeze(-1).to(device="cuda")
+    # 对于协方差，这可能需要更复杂的处理，取决于它们的具体结构和如何与means3D对应
+    filtered_log_scales = ps_gaussians.covariances.squeeze(0)[close_points_mask].diagonal(dim1=-2, dim2=-1).mean(dim=-1, keepdim=True)
+
     params = {
-        'means3D': means3D,
-        'rgb_colors': new_pt_cld[:, 3:6],
+        # 'means3D': ps_gaussians.means.squeeze(0).to(device="cuda"),
+        # 'rgb_colors': ps_gaussians.harmonics.squeeze(0)[..., 0].to(device="cuda"),
+        # 'unnorm_rotations': unnorm_rots,
+        # 'logit_opacities': ps_gaussians.opacities.squeeze(0).unsqueeze(-1).to(device="cuda"),
+        # 'log_scales': ps_gaussians.covariances.squeeze(0).diagonal(dim1=-2, dim2=-1).mean(dim=-1, keepdim=True),
+        'means3D': filtered_ps_means,
         'unnorm_rotations': unnorm_rots,
-        'logit_opacities': logit_opacities,
-        'log_scales': log_scales,
+        'rgb_colors': filtered_rgb_colors,
+        'log_scales': filtered_log_scales,
+        'logit_opacities': filtered_logit_opacities,
+
+        
     }
-    
-    
-    print(means3D.shape)
-    print(ps_gaussians.means.shape)
-    print("OOOOOOOOOOOOOOOOOOOOO")
 
-    print(new_pt_cld[:, 3:6].shape)
-    print(ps_gaussians.harmonics.shape)
-    print("OOOOOOOOOOOOOOOOOOOOO")
+    for k, v in params.items():
+    # Check if value is already a torch tensor
+        if not isinstance(v, torch.Tensor):
+            params[k] = torch.nn.Parameter(torch.tensor(v).cuda().float().contiguous().requires_grad_(True))
+        else:
+            params[k] = torch.nn.Parameter(v.cuda().float().contiguous().requires_grad_(True))
 
-    print(logit_opacities.shape)
-    print(ps_gaussians.opacities.shape)
-    print("OOOOOOOOOOOOOOOOOOOOO")
+    return params
 
-    print(log_scales.shape)
-    print(ps_gaussians.covariances.shape)
-    print("OOOOOOOOOOOOOOOOOOOOO")
-
-
-    time.sleep(100)
     # print(ps_gaussians)
     # print("num ", (ps_gaussians.opacities>0.2).sum().item())
     
@@ -464,14 +506,7 @@ def initialize_new_params(new_pt_cld, mean3_sq_dist, gaussian_distribution,
     #     'logit_opacities': logit_opacities,
     #     'log_scales': log_scales,
     # }
-    for k, v in params.items():
-        # Check if value is already a torch tensor
-        if not isinstance(v, torch.Tensor):
-            params[k] = torch.nn.Parameter(torch.tensor(v).cuda().float().contiguous().requires_grad_(True))
-        else:
-            params[k] = torch.nn.Parameter(v.cuda().float().contiguous().requires_grad_(True))
 
-    return params
 
 
 def add_new_gaussians(params, variables, curr_data, sil_thres, 
@@ -494,31 +529,6 @@ def add_new_gaussians(params, variables, curr_data, sil_thres,
     # Flatten mask
     non_presence_mask = non_presence_mask.reshape(-1)
 
-    # print(curr_data['last_im'].shape)
-    # print(curr_data['intrinsics'])
-    # print("))))))))))))))))))))")
-    # print(curr_data['im'].shape)
-    # image_to_display = curr_data['im'].cpu().permute(1, 2, 0)
-    # plt.imshow(image_to_display)
-    # plt.axis('off') # 不显示坐标轴
-    # plt.savefig('/root/autodl-tmp/SplaTAM/data/Replica/room0_256_256/saved_image.png', bbox_inches='tight', pad_inches=0.0)
-
-    # # plt.imshow(image_to_display)
-    # # plt.axis('off') # 不显示坐标轴
-    # # plt.show()
-
-    # time.sleep(10)
-    # print(curr_data['im'])
-    # tensor = (curr_data['im'].cpu() * 255).byte()
-
-    # # 转换为numpy数组，并将通道顺序从[通道, 高度, 宽度]改为[高度, 宽度, 通道]
-    # img = tensor.numpy().transpose(1, 2, 0)
-
-    # # 使用OpenCV显示图像
-    # img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-    # cv2.imwrite('/root/autodl-tmp/SplaTAM/output_image.png', img)
-    # time.sleep(10)
-
     # Get the new frame Gaussians based on the Silhouette
     if torch.sum(non_presence_mask) > 0:
         # Get the new pointcloud in the world frame
@@ -529,31 +539,36 @@ def add_new_gaussians(params, variables, curr_data, sil_thres,
         curr_w2c[:3, 3] = curr_cam_tran
 
         # add pose at last frame
-        last_cam_rot = torch.nn.functional.normalize(params['cam_unnorm_rots'][..., time_idx-map_step+1].detach())
-        last_cam_tran = params['cam_trans'][..., time_idx-map_step+1].detach()
+        last_cam_rot = torch.nn.functional.normalize(params['cam_unnorm_rots'][..., time_idx-map_step].detach())
+        last_cam_tran = params['cam_trans'][..., time_idx-map_step].detach()
         last_w2c = torch.eye(4).cuda().float()
         last_w2c[:3, :3] = build_rotation(last_cam_rot)
         last_w2c[:3, 3] = last_cam_tran
 
         valid_depth_mask = (curr_data['depth'][0, :, :] > 0)
         non_presence_mask = non_presence_mask & valid_depth_mask.reshape(-1)
-        new_pt_cld, mean3_sq_dist = get_pointcloud(curr_data['im'], curr_data['depth'], curr_data['intrinsics'], 
-                                    curr_w2c, mask=non_presence_mask, compute_mean_sq_dist=True,
-                                    mean_sq_dist_method=mean_sq_dist_method)
+        new_pt_cld, mean3_sq_dist, all_cld = get_pointcloud(curr_data['im'], curr_data['depth'], curr_data['intrinsics'], 
+                                                curr_w2c, mask=non_presence_mask, compute_mean_sq_dist=True,
+                                                mean_sq_dist_method=mean_sq_dist_method)
 
 
         new_params = initialize_new_params(new_pt_cld, mean3_sq_dist, gaussian_distribution, 
-                                           last_w2c, curr_w2c, pixelsplat, curr_data)
+                                           last_w2c, curr_w2c, pixelsplat, curr_data, all_cld)
 
 
         for k, v in new_params.items():
             params[k] = torch.nn.Parameter(torch.cat((params[k], v), dim=0).requires_grad_(True))
         num_pts = params['means3D'].shape[0]
+
+        # print(num_pts)
+        # print(new_params['means3D'].shape[0])
+        # time.sleep(5)
         variables['means2D_gradient_accum'] = torch.zeros(num_pts, device="cuda").float()
         variables['denom'] = torch.zeros(num_pts, device="cuda").float()
         variables['max_2D_radius'] = torch.zeros(num_pts, device="cuda").float()
-        new_timestep = time_idx*torch.ones(new_pt_cld.shape[0],device="cuda").float()
+        new_timestep = time_idx*torch.ones(new_params['means3D'].shape[0],device="cuda").float()
         variables['timestep'] = torch.cat((variables['timestep'],new_timestep),dim=0)
+
 
     return params, variables
 
@@ -785,7 +800,7 @@ def rgbd_slam(config: dict, pixelsplat):
         # Load RGBD frames incrementally instead of all frames
         color, depth, _, gt_pose = dataset[time_idx]
         if (time_idx+1) % config['map_every'] == 0:
-            last_color, _, _, last_gt_pose = dataset[time_idx-config['map_every']+1]
+            last_color, _, _, last_gt_pose = dataset[time_idx-config['map_every']]
             last_color = last_color.permute(2, 0, 1) / 255
 
         # Process poses
@@ -891,7 +906,10 @@ def rgbd_slam(config: dict, pixelsplat):
             # Copy over the best candidate rotation & translation
             with torch.no_grad():
                 params['cam_unnorm_rots'][..., time_idx] = candidate_cam_unnorm_rot
+                # print(candidate_cam_unnorm_rot)
                 params['cam_trans'][..., time_idx] = candidate_cam_tran
+                # print(candidate_cam_tran)
+    
 
         elif time_idx > 0 and config['tracking']['use_gt_poses']:
             with torch.no_grad():

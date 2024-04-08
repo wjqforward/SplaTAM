@@ -9,7 +9,7 @@ primary_device="cuda:0"
 seed = 0
 scene_name = scenes[0]
 
-map_every = 10
+map_every = 1
 keyframe_every = 5
 mapping_window_size = 32
 tracking_iters = 10
@@ -39,7 +39,7 @@ config = dict(
     use_wandb=True,
     wandb=dict(
         entity="wjqforward",
-        project="week5",
+        project="week6",
         group=group_name,
         name=run_name,
         save_qual=False,
