@@ -375,7 +375,7 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
 
 def tensor_to_o3d(tensor):
     """将PyTorch张量转换为Open3D点云对象"""
-    np_points = tensor.cpu().numpy()  # 转换为NumPy数组
+    np_points = tensor.detach().cpu().numpy()  # 转换为NumPy数组
     pcd = o3d.geometry.PointCloud()  # 创建一个Open3D点云对象
     pcd.points = o3d.utility.Vector3dVector(np_points)  # 设置点云坐标
     return pcd
@@ -396,7 +396,7 @@ def initialize_new_params(new_pt_cld, mean3_sq_dist, gaussian_distribution,
     # num_pts = new_pt_cld.shape[0]
     means3D = new_pt_cld[:, :3] # [num_gaussians, 3]
     num_pts = ps_gaussians.means.squeeze(0).shape[0]
-    unnorm_rots = np.tile([1, 0, 0, 0], (means3D.shape[0], 1)) # [num_gaussians, 4]
+    unnorm_rots = np.tile([1, 0, 0, 0], (new_pt_cld.shape[0], 1)) # [num_gaussians, 4]
     # logit_opacities = torch.zeros((num_pts, 1), dtype=torch.float, device="cuda")
     # if gaussian_distribution == "isotropic":
     #     log_scales = torch.tile(torch.log(torch.sqrt(mean3_sq_dist))[..., None], (1, 1))
@@ -421,16 +421,21 @@ def initialize_new_params(new_pt_cld, mean3_sq_dist, gaussian_distribution,
     b_pcd = torch.tensor(transformed_points, device="cuda", dtype=torch.float)
 
     # print(a_pcd.shape)
-    # print(b_pcd.shape)
+    print(b_pcd.shape)
     # print("OOOOOOOOOO")
     
     # 假设 means3D 和 ps_gaussians.means 已经被转移到了适当的CUDA设备
     means3D = means3D.to(device="cuda")  # 新一帧的部分点云 [num_gaussians, 3]
-    ps_means = b_pcd.to(device="cuda")  # 预训练模型生成的点云 [num_pts, 3]
+    ps_gaussians.means = b_pcd  # 预训练模型生成的点云 [num_pts, 3]
 
-    dist_matrix = torch.cdist(ps_means, means3D, p=2)  # [num_pts, num_gaussians]
+    dist_matrix = torch.cdist(b_pcd, means3D, p=2)  # [num_pts, num_gaussians]
     close_points_mask = torch.argmin(dist_matrix, dim=0)
-    filtered_ps_means = ps_means[close_points_mask]
+
+    del dist_matrix
+    torch.cuda.empty_cache()
+
+
+    filtered_ps_means = b_pcd[close_points_mask]
 
     # time.sleep(10)
     # print(means3D.shape)
@@ -446,7 +451,7 @@ def initialize_new_params(new_pt_cld, mean3_sq_dist, gaussian_distribution,
         # 'rgb_colors': ps_gaussians.harmonics.squeeze(0)[..., 0].to(device="cuda"),
         # 'unnorm_rotations': unnorm_rots,
         # 'logit_opacities': ps_gaussians.opacities.squeeze(0).unsqueeze(-1).to(device="cuda"),
-        # 'log_scales': ps_gaussians.covariances.squeeze(0).diagonal(dim1=-2, dim2=-1).mean(dim=-1, keepdim=True),
+        # 'log_scales': torch.sqrt(ps_gaussians.covariances.squeeze(0).diagonal(dim1=-2, dim2=-1).mean(dim=-1, keepdim=True)),
         'means3D': filtered_ps_means,
         'unnorm_rotations': unnorm_rots,
         'rgb_colors': filtered_rgb_colors,
@@ -555,19 +560,26 @@ def add_new_gaussians(params, variables, curr_data, sil_thres,
         new_params = initialize_new_params(new_pt_cld, mean3_sq_dist, gaussian_distribution, 
                                            last_w2c, curr_w2c, pixelsplat, curr_data, all_cld)
 
-
         for k, v in new_params.items():
-            params[k] = torch.nn.Parameter(torch.cat((params[k], v), dim=0).requires_grad_(True))
+            # 假设params[k]已经存在，并且您想要用new_params中的v来替换params中对应的值
+            if k in params:
+                # 创建一个新的Parameter，用v的值替换掉原来的值
+                # 这里不进行拼接，直接替换
+                params[k] = v
+
+        # for k, v in new_params.items():
+        #     params[k] = torch.nn.Parameter(torch.cat((params[k], v), dim=0).requires_grad_(True))
         num_pts = params['means3D'].shape[0]
 
-        # print(num_pts)
+        print("NUM_PTS", num_pts)
         # print(new_params['means3D'].shape[0])
         # time.sleep(5)
         variables['means2D_gradient_accum'] = torch.zeros(num_pts, device="cuda").float()
         variables['denom'] = torch.zeros(num_pts, device="cuda").float()
         variables['max_2D_radius'] = torch.zeros(num_pts, device="cuda").float()
         new_timestep = time_idx*torch.ones(new_params['means3D'].shape[0],device="cuda").float()
-        variables['timestep'] = torch.cat((variables['timestep'],new_timestep),dim=0)
+        # variables['timestep'] = torch.cat((variables['timestep'],new_timestep),dim=0)
+        variables['timestep'] = new_timestep
 
 
     return params, variables
@@ -838,6 +850,8 @@ def rgbd_slam(config: dict, pixelsplat):
         if time_idx > 0:
             params = initialize_camera_pose(params, time_idx, forward_prop=config['tracking']['forward_prop'])
 
+
+        print("tracking", params['means3D'].shape[0])
         # Tracking
         tracking_start_time = time.time()
         if time_idx > 0 and not config['tracking']['use_gt_poses']:
@@ -852,6 +866,8 @@ def rgbd_slam(config: dict, pixelsplat):
             do_continue_slam = False
             num_iters_tracking = config['tracking']['num_iters']
             progress_bar = tqdm(range(num_iters_tracking), desc=f"Tracking Time Step: {time_idx}")
+
+
             while True:
                 iter_start_time = time.time()
                 # Loss for current frame
@@ -1024,7 +1040,7 @@ def rgbd_slam(config: dict, pixelsplat):
                 loss.backward()
                 with torch.no_grad():
                     # Prune Gaussians
-                    if config['mapping']['prune_gaussians']:
+                    if not config['mapping']['prune_gaussians']:
                         params, variables = prune_gaussians(params, variables, optimizer, iter, config['mapping']['pruning_dict'])
                         if config['use_wandb']:
                             wandb_run.log({"Mapping/Number of Gaussians - Pruning": params['means3D'].shape[0],

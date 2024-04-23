@@ -39,9 +39,9 @@ config = dict(
     use_wandb=True,
     wandb=dict(
         entity="wjqforward",
-        project="week6",
+        project="week8",
         group=group_name,
-        name=run_name,
+        name="pix_1",
         save_qual=False,
         eval_save_qual=True,
     ),

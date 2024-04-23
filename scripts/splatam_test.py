@@ -397,7 +397,7 @@ def add_new_gaussians(params, variables, curr_data, sil_thres,
     # Flatten mask
     non_presence_mask = non_presence_mask.reshape(-1)
 
-    # print(curr_data['im'].shape)
+    print(curr_data['im'].shape)
     # print(curr_data['im'])
     # tensor = (curr_data['im'].cpu() * 255).byte()
 
@@ -468,7 +468,8 @@ def convert_params_to_store(params):
 
 
 def rgbd_slam(config: dict, gaussian_gen):
-
+    gaussian_gen.generate_gaussians()
+    time.sleep(10)
     # Print Config
     print("Loaded Config:")
     if "use_depth_loss_thres" not in config['tracking']:
