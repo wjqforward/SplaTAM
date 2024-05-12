@@ -39,9 +39,9 @@ config = dict(
     use_wandb=True,
     wandb=dict(
         entity="wjqforward",
-        project="week8",
+        project="week10",
         group=group_name,
-        name="pix_1",
+        name="test0",
         save_qual=False,
         eval_save_qual=True,
     ),
@@ -74,6 +74,7 @@ config = dict(
         sil_thres=0.99,
         use_l1=True,
         ignore_outlier_depth_loss=False,
+        #TODO
         loss_weights=dict(
             im=0.5,
             depth=1.0,

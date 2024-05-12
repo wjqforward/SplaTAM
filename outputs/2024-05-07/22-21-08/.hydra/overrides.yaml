@@ -1,0 +1,2 @@
+- +experiment=re10k
+- checkpointing.load=/root/autodl-tmp/pixelsplat/checkpoints/re10k.ckpt

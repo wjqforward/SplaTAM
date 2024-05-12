@@ -38,10 +38,10 @@ config = dict(
     checkpoint_interval=100, # Checkpoint Interval
     use_wandb=True,
     wandb=dict(
-        entity="theairlab",
-        project="SplaTAM",
+        entity="wjqforward",
+        project="week10",
         group=group_name,
-        name=run_name,
+        name='best',
         save_qual=False,
         eval_save_qual=True,
     ),
