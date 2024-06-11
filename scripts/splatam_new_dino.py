@@ -282,25 +282,16 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
     im, radius, _, = Renderer(raster_settings=curr_data['cam'])(**rendervar)
     variables['means2D'] = rendervar['means2D']  # Gradient only accum from colour render for densification
     
-    # Feature Extraction with DINOv2
-    with torch.no_grad():
+    #TODO
+    inputs = processor(images=[curr_data['im'], torch.clamp(im, min=0, max=1)], return_tensors="pt")
+    outputs = dino_model(**inputs)
+    last_hidden_states = outputs[0]
 
-        inputs1 = processor(images=curr_data['im'].unsqueeze(0), return_tensors="pt")
-        outputs1 = dino_model(**inputs1)
-        last_hidden_states1 = outputs1[0]
-        
-        inputs2 = processor(images=im.unsqueeze(0), return_tensors="pt")
-        outputs2 = dino_model(**inputs2)
-        last_hidden_states2 = outputs2[0]
+    last_hidden_states1 = last_hidden_states[0]
+    last_hidden_states2 = last_hidden_states[1]
 
-    # Calculate Feature Metric Loss (using L2 norm for simplicity)
-    feature_loss = torch.norm(last_hidden_states1 - last_hidden_states2, p=2)
-    # Include feature metric loss in the losses dictionary
+    feature_loss = l1_loss_v1(last_hidden_states1, last_hidden_states2)
     losses['feature'] = feature_loss
-
-
-
-
 
     # Depth & Silhouette Rendering
     depth_sil, _, _, = Renderer(raster_settings=curr_data['cam'])(**depth_sil_rendervar)
@@ -388,10 +379,6 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
         # os.makedirs(save_plot_dir, exist_ok=True)
         # plt.savefig(os.path.join(save_plot_dir, f"%04d.png" % tracking_iteration), bbox_inches='tight')
         # plt.close()
-    #TODO
-    print(losses)
-    save_image(im, 'test_render_image.png')
-    time.sleep(100)
 
     weighted_losses = {k: v * loss_weights[k] for k, v in losses.items()}
     loss = sum(weighted_losses.values())
@@ -400,6 +387,12 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
     variables['max_2D_radius'][seen] = torch.max(radius[seen], variables['max_2D_radius'][seen])
     variables['seen'] = seen
     weighted_losses['loss'] = loss
+
+    #TODO
+    print("losses", losses)
+    # save_image(im, 'test_render_image.png')
+    # time.sleep(100)
+
 
     return loss, variables, weighted_losses
 

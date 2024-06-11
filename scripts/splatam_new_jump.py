@@ -392,7 +392,7 @@ def initialize_new_params(new_pt_cld, mean3_sq_dist, gaussian_distribution,
     print(loss)
     print("~~~~~~~~~~~~~~~~")
     # time.sleep(100)
-    if loss > 1000 and curr_data['id'] >= 200 and interval_ >= 200:
+    if loss > 1000 and curr_data['id'] >= 2 and interval_ >= 5:
         
         ps_gaussians, psnr = pixelsplat.generate_gaussians(curr_data['id'], last_w2c, curr_w2c,
                                                     curr_data['last_im'], curr_data['im'], 
@@ -540,9 +540,9 @@ def add_new_gaussians(params, variables, curr_data, sil_thres,
         last_w2c[:3, :3] = build_rotation(last_cam_rot)
         last_w2c[:3, 3] = last_cam_tran
 
-        if time_idx >= 150:
-            last_cam_rot = torch.nn.functional.normalize(params['cam_unnorm_rots'][..., time_idx-30].detach())
-            last_cam_tran = params['cam_trans'][..., time_idx-30].detach()
+        if time_idx >= 2:
+            last_cam_rot = torch.nn.functional.normalize(params['cam_unnorm_rots'][..., time_idx-2].detach())
+            last_cam_tran = params['cam_trans'][..., time_idx-2].detach()
             last_w2c = torch.eye(4).cuda().float()
             last_w2c[:3, :3] = build_rotation(last_cam_rot)
             last_w2c[:3, 3] = last_cam_tran
@@ -810,9 +810,10 @@ def rgbd_slam(config: dict, pixelsplat):
     for time_idx in tqdm(range(checkpoint_time_idx, num_frames)):
         # Load RGBD frames incrementally instead of all frames
         color, depth, _, gt_pose = dataset[time_idx]
-        if time_idx >= 150:
-            last_color, _, _, last_gt_pose = dataset[time_idx-30]
+        if time_idx >= 1:
+            last_color, last_depth, _, last_gt_pose = dataset[time_idx-2]
             last_color = last_color.permute(2, 0, 1) / 255
+            last_depth = last_depth.permute(2, 0, 1)
 
         # Process poses
         gt_w2c = torch.linalg.inv(gt_pose)
@@ -829,8 +830,9 @@ def rgbd_slam(config: dict, pixelsplat):
         curr_data = {'cam': cam, 'im': color, 'depth': depth, 'id': iter_time_idx, 'intrinsics': intrinsics, 
                      'w2c': first_frame_w2c, 'iter_gt_w2c_list': curr_gt_w2c}
 
-        if time_idx >= 150:
+        if time_idx >= 1:
             curr_data['last_im'] = last_color
+            curr_data['last_d'] = last_depth
         
         # Initialize Data for Tracking
         if seperate_tracking_res:
@@ -847,6 +849,9 @@ def rgbd_slam(config: dict, pixelsplat):
         
         # Initialize the camera pose for the current frame
         if time_idx > 0:
+            # from ini_cam import initialize_camera_pose
+            # params = initialize_camera_pose(params, time_idx, forward_prop=config['tracking']['forward_prop'], \
+            #                                 curr_data = curr_data)
             params = initialize_camera_pose(params, time_idx, forward_prop=config['tracking']['forward_prop'])
 
 
